@@ -5,11 +5,9 @@ Hodgkin-Huxely type
 """
 
 using Unitful
-#using Plots
 using Makie
 using MakieLayout
 using Printf
-#gr()
 
 const k_int = 112.0u"mmol/L" #Intracellular potassium conc. (millimolar)
 const k_ext = 2.0u"mmol/L" #Extracellular potassium conc. (millimolar)
@@ -26,8 +24,8 @@ const Pulse_time=0.5u"s"
 struct Hair_Cell
     #state vector(s)
     x::Array{Any,1} #contains V, m_K1f, m_K1s, m_h, m_DRK, m_Ca
-    BK::Array{Any,1} #contains Ca_conc, h_BKT
-    PoMET::Array{Any,1} #contains open state prob.
+    BK::Array{Any,1} #contains h_BKT and state-probs of BK current (eg C2)
+    PoMET::Array{Any,1} #contains open state prob. of mechanoceptors
     currents::Array{typeof(1.0u"nA"),1} #stores current current values
     #Parameters
     #
@@ -59,7 +57,7 @@ end
 ###################################################################
 
 
-scene, layout=layoutscene(nrows=1,ncols=3,resolution = (1400,700))
+scene, layout=layoutscene(nrows=1,ncols=3,resolution = (1800,850))
 
 #set up axes for burn-in plot
 layout[1,1]=BIplots_layout=GridLayout(2,1)
@@ -158,15 +156,9 @@ p_layout[1,3]=LText(scene, lift(x->@sprintf("%.2f",x), p_slider.value))
 """
 function Hair_Cell(V::typeof(1.0u"mV"),
                     #Reversal potentials
-                    E_K,
-                    E_h,
-                    E_Ca,
-                    E_L,
+                    E_K, E_h, E_Ca, E_L,
                     #Maximal Conductances
-                    g_K1,
-                    g_h,
-                    g_Ca,
-                    g_L,
+                    g_K1, g_h, g_Ca, g_L,
                     b)
     #Reversal Potentials
     E_K=E_K*1.0u"mV"
@@ -189,14 +181,13 @@ function Hair_Cell(V::typeof(1.0u"mV"),
     b=b
     #cell capacitance
     Cm=10.0u"pF" # (a,c)
-    #initial m values for state vector, set as 0 for now
+    #initial m values for state vector, set as equilibrium for V
     m_K1f=m_k1_inf(V)
     m_K1s=m_k1_inf(V)
     m_h=m_h_inf(V)
     m_DRK=m_DRK_inf(V)
     m_Ca=m_Ca_inf(V)
     #initial values for params of BK-current stuff (another state vector)
-    Ca_conc= 0.0u"mmol/L"#find something good
     h_BKT=h_BKT_inf(V) #h for inactivation
     C0=0.6
     C1=0.1
@@ -205,7 +196,8 @@ function Hair_Cell(V::typeof(1.0u"mV"),
     O3=0.1
 
     PoMet=0.15
-    return Hair_Cell([V,m_K1f, m_K1s, m_h, m_DRK, m_Ca], [Ca_conc, h_BKT,C0,C1,C2,O2,O3],[PoMet],[0.0u"nA",0.0u"nA",0.0u"nA",0.0u"nA",0.0u"nA",0.0u"nA",0.0u"nA",0.0u"nA"],
+    return Hair_Cell([V,m_K1f, m_K1s, m_h, m_DRK, m_Ca], [h_BKT,C0,C1,C2,O2,O3],
+    [PoMet],[0.0u"nA",0.0u"nA",0.0u"nA",0.0u"nA",0.0u"nA",0.0u"nA",0.0u"nA",0.0u"nA"],
     E_K,E_h,E_Ca,E_L,E_MET,g_K1,g_h,g_Ca,g_L,g_MET,P_DRK,P_BKS,P_BKT,b,Cm)
 end
 
@@ -224,9 +216,9 @@ function update(cell::Hair_Cell,input=0.0u"nA")
     cell.currents[3]=IDRK
     ICa = cell.g_Ca*(V-cell.E_Ca)*mCa(V,cell.x[6])^3
     cell.currents[4]=ICa
-    IBKS = cell.b*cell.P_BKS*((V*F^2)/(R*T))*((k_int-k_ext*exp(-pow))/(1-exp(-pow)))*(O_2(V,cell.BK[5],cell.BK[6],cell.BK[7])+O_3(V,cell.BK[6],cell.BK[7]))
+    IBKS = cell.b*cell.P_BKS*((V*F^2)/(R*T))*((k_int-k_ext*exp(-pow))/(1-exp(-pow)))*(O_2(V,cell.BK[4],cell.BK[5],cell.BK[6])+O_3(V,cell.BK[5],cell.BK[6]))
     cell.currents[5]=IBKS
-    IBKT = cell.b*cell.P_BKT*((V*F^2)/(R*T))*((k_int-k_ext*exp(-pow))/(1-exp(-pow)))*(O_2(V,cell.BK[5],cell.BK[6],cell.BK[7])+O_3(V,cell.BK[6],cell.BK[7]))*hBKT(V,cell.BK[2])
+    IBKT = cell.b*cell.P_BKT*((V*F^2)/(R*T))*((k_int-k_ext*exp(-pow))/(1-exp(-pow)))*(O_2(V,cell.BK[4],cell.BK[5],cell.BK[6])+O_3(V,cell.BK[5],cell.BK[6]))*hBKT(V,cell.BK[1])
     cell.currents[6]=IBKT
     IL = cell.g_L*(V-cell.E_L)
     cell.currents[7]=IL
@@ -241,13 +233,12 @@ function update(cell::Hair_Cell,input=0.0u"nA")
     cell.x[4]=   mh(V,cell.x[4]) #m_h
     cell.x[5]= mDRK(V,cell.x[5]) #m_DRK
     cell.x[6]=  mCa(V,cell.x[6]) #m_Ca
-    #cell.BK[1]= Ca_conc(cell.BK[1],ICa) #Intracellular calcium concentration
-    cell.BK[2]= hBKT(V,cell.BK[2]) #h_BKT
-    cell.BK[3]= C_0(cell.BK[4],cell.BK[5],cell.BK[6],cell.BK[7]) #C0
-    cell.BK[4]= C_1(V,cell.BK[3],cell.BK[4],cell.BK[5]) #C1
-    cell.BK[5]= C_2(V,cell.BK[4],cell.BK[5],cell.BK[6]) #C2
-    cell.BK[6]= O_2(V,cell.BK[5],cell.BK[6],cell.BK[7]) #02
-    cell.BK[7]= O_3(V,cell.BK[6],cell.BK[7]) #03
+    cell.BK[1]= hBKT(V,cell.BK[1]) #h_BKT
+    cell.BK[2]= C_0(cell.BK[3],cell.BK[4],cell.BK[5],cell.BK[6]) #C0
+    cell.BK[3]= C_1(V,cell.BK[2],cell.BK[3],cell.BK[4]) #C1
+    cell.BK[4]= C_2(V,cell.BK[3],cell.BK[4],cell.BK[5]) #C2
+    cell.BK[5]= O_2(V,cell.BK[4],cell.BK[5],cell.BK[6]) #02
+    cell.BK[6]= O_3(V,cell.BK[5],cell.BK[6]) #03
 end
 
 #equations for K1 current
@@ -270,7 +261,7 @@ m_h_inf(V)=(1+exp((V+87u"mV")/16.7u"mV"))^(-1)
 #equations for DRK current
 mDRK(V,mDRK)= mDRK+ΔmDRK(V,mDRK)
 ΔmDRK(V, mDRK) = (m_DRK_inf(V)- mDRK)*(dt/τ_DRK(V))
-m_DRK_inf(V) = (1+exp((V+48.3u"mV")/4.19u"mV"))^(-1/2) #CHANGED V1/2*********************
+m_DRK_inf(V) = (1+exp((V+48.3u"mV")/4.19u"mV"))^(-1/2)
 
 τ_DRK(V) = (α_DRK(V)+β_DRK(V))^(-1)
 α_DRK(V) = (3.2u"ms"*exp(-V/20.9u"mV")+3.0u"ms")^(-1)
@@ -321,11 +312,6 @@ O_2(V,C2,O2,O3)= O2 + ΔO_2(V,C2,O2,O3)
 O_3(V,O2,O3)= O3+ΔO_3(V,O2,O3)
 ΔO_3(V,O2,O3)=uconvert(Unitful.NoUnits,(k3_Ca(V)*O2-k_3*O3)*dt)
 
-#Ca_conc(Ca,ICa)=Ca+ΔCa_conc(Ca,ICa)
-#ΔCa_conc(Ca,ICa)=(-0.00061u"mol/(L*ms*nA)"*ICa - 2800u"1/ms"*Ca)*dt #this smells funky
-#Ca_conc(Ca,ICa)=uconvert(u"mmol/L",Ca+ΔCa_conc(Ca,ICa))
-#ΔCa_conc(Ca,ICa)=(-0.00061*ICa - 2800*Ca)*dt
-
 #inactivation of BKT current
 hBKT(V,hBKT) = hBKT+Δh_BKT(V,hBKT)
 Δh_BKT(V,hBKT)= (h_BKT_inf(V)-hBKT)*(dt/τ_BKT(V))
@@ -335,7 +321,7 @@ h_BKT_inf(V) = (1+exp((V+61.6u"mV")/3.65u"mV"))^(-1)
 """
     runs for a given time to let parameters settle into equilibrium state
 """
-function burnin(cell, time=5.0u"s", displayV=true,displayEachC=false,displayallC=true,printMP=true)
+function burnin(cell, time=5.0u"s")
     t=0.0u"s":dt:time
     voltBI=Array{typeof(1.0u"mV")}(undef, length(t))
     currents_p=Array{Any,2}(undef,length(t),8)
@@ -344,51 +330,11 @@ function burnin(cell, time=5.0u"s", displayV=true,displayEachC=false,displayallC
         voltBI[i]=cell.x[1]
         currents_p[i,:].=cell.currents
     end
-    if displayV
-        #display(plot(ustrip.(t),ustrip.(voltBI), title="Membrane Potential during Burn-in"))
-    end
-    if displayEachC
-        #plotEach(ustrip.(t),ustrip.(currents_p))
-    end
-    if displayallC
-        #plotTOGETHER(ustrip.(t),ustrip.(currents_p))
-    end
-    if printMP
-        #println(string("RMP after burn-in: ",cell.x[1]))
-    end
     return ustrip.(voltBI),ustrip.(t),ustrip.(currents_p)
 end
 
 """
-    Called by burnin to plot a graph of each current over time
-"""
-function plotEach(t,currents)
-    display(plot(t,currents[:,1], title="IK1"))
-    display(plot(t,currents[:,2], title="Ih"))
-    display(plot(t,currents[:,3], title="IDRK"))
-    display(plot(t,currents[:,4], title="ICa"))
-    display(plot(t,currents[:,5], title="IBKS"))
-    display(plot(t,currents[:,6], title="IBKT"))
-    display(plot(t,currents[:,7], title="IL"))
-    display(plot(t,currents[:,8], title="IMET"))
-end
-
-"""
-    Called by burnin to plot a graph of all currents over time
-"""
-function plotTOGETHER(t,currents)
-    plot(t,currents[:,1], label="IK1")
-    plot!(t,currents[:,2], label="Ih")
-    plot!(t,currents[:,3], label="IDRK")
-    plot!(t,currents[:,4], label="ICa")
-    plot!(t,currents[:,5], label="IBKS")
-    plot!(t,currents[:,6], label="IBKT")
-    plot!(t,currents[:,7], label="IL")
-    display(plot!(t,currents[:,8], label="IMET"))
-end
-
-"""
-   pulse waveform same length as t - called by pulseReponse
+   Generates a pulse waveform same length as t - called by pulseReponse
 """
 function pulse(time=0.5u"s", start=2.0e-1u"s", len=2.0e-1u"s", amplitude=p_slider.value[]*1.0u"nA")
     t=0.0u"s":dt:time
@@ -402,7 +348,7 @@ end
 """
     Models response of cell to a pulse of given amplitude and length
 """
-function pulseResponse(cell,amplitude=p_slider.value[]*1.0u"nA", time=Pulse_time, start=2.0e-1u"s", len=2.0e-1u"s", displayV=true,displayEachC=false,displayallC=true,printMP=false)
+function pulseResponse(cell,amplitude=p_slider.value[]*1.0u"nA", time=Pulse_time, start=2.0e-1u"s", len=2.0e-1u"s")
     t=0.0u"s":dt:time
     input = pulse(time,start,len,amplitude) #in nA
     voltages=Array{typeof(1.0u"mV")}(undef, length(t))
@@ -413,22 +359,12 @@ function pulseResponse(cell,amplitude=p_slider.value[]*1.0u"nA", time=Pulse_time
         voltages[i]=cell.x[1]
         currents_p[i,:].=cell.currents
     end
-    if displayV
-        #plot(ustrip.(t),ustrip.(voltages), title="Membrane Potential during Pulse",ylabel="Membrane Potential (mV)")
-        #display(plot!(twinx(),ustrip.(t),ustrip.(input),ylims=(-1e-3,ustrip(amplitude)*3),ylabel="Pulse Amplitude (nA)",linecolor=:violet,label="pulse"))
-    end
-    if displayEachC
-        #plotEach(ustrip.(t),ustrip.(currents_p))
-    end
-    if displayallC
-        #plotTOGETHER(ustrip.(t),ustrip.(currents_p))
-    end
-    if printMP
-        #println(string("RMP after pulse: ",cell.x[1]))
-    end
     return voltages,t,currents_p
 end
 
+"""
+  Calls other functions to allow animation
+"""
 function go(
             E_K=E_K_slider.value[],
             E_h=E_h_slider.value[],
@@ -464,38 +400,41 @@ function go(
     return burn_v,burn_time,pulse_V,pulse_time,burn_currents,pulse_currents
 end
 
-all_arrays=go()
-BI_volt0=all_arrays[1]
-BI_time0=all_arrays[2]
-PR_volt0=all_arrays[3]
-PR_time0=all_arrays[4]
-BI_currents0=all_arrays[5]
-PR_currents0=all_arrays[6]
+const all_arrays=go()
+const BI_volt0=all_arrays[1]
+const BI_time0=all_arrays[2]
+const PR_volt0=all_arrays[3]
+const PR_time0=all_arrays[4]
+const BI_currents0=all_arrays[5]
+const PR_currents0=all_arrays[6]
 
+#################################################################################
+#Plot graphs based on initial slider values
+#################################################################################
+BI_plothandle=lines!(BI_axis,BI_time0,BI_volt0, color=:black)
 
-BI_plothandle=lines!(BI_axis,BI_time0,BI_volt0)
-
-BI_c_plothandle=lines!(BI_c_axis,BI_time0,BI_currents0[:,1])#, label="IK1")
-BI_c_plothandle2=lines!(BI_c_axis,BI_time0,BI_currents0[:,2],color=:red)#, label="Ih")
-BI_c_plothandle3=lines!(BI_c_axis,BI_time0,BI_currents0[:,3],color=:blue)#, label="IDRK")
-BI_c_plothandle4=lines!(BI_c_axis,BI_time0,BI_currents0[:,4],color=:orange)#, label="ICa")
-BI_c_plothandle5=lines!(BI_c_axis,BI_time0,BI_currents0[:,5],color=:darkred)#, label="IBKS")
-BI_c_plothandle6=lines!(BI_c_axis,BI_time0,BI_currents0[:,6],color=:green)#, label="IBKT")
-BI_c_plothandle7=lines!(BI_c_axis,BI_time0,BI_currents0[:,7],color=:magenta)#, label="IL")
-BI_c_plothandle8=lines!(BI_c_axis,BI_time0,BI_currents0[:,8],color=:purple)#, label="IMET")
-
+BI_c_plothandle1=lines!(BI_c_axis,BI_time0,BI_currents0[:,1],color=:black)#   IK1
+BI_c_plothandle2=lines!(BI_c_axis,BI_time0,BI_currents0[:,2],color=:red)#     Ih
+BI_c_plothandle3=lines!(BI_c_axis,BI_time0,BI_currents0[:,3],color=:blue)#    IDRK
+BI_c_plothandle4=lines!(BI_c_axis,BI_time0,BI_currents0[:,4],color=:orange)#  ICa
+BI_c_plothandle5=lines!(BI_c_axis,BI_time0,BI_currents0[:,5],color=:darkred)# IBKS
+BI_c_plothandle6=lines!(BI_c_axis,BI_time0,BI_currents0[:,6],color=:green)#   IBKT
+BI_c_plothandle7=lines!(BI_c_axis,BI_time0,BI_currents0[:,7],color=:magenta)# IL
+BI_c_plothandle8=lines!(BI_c_axis,BI_time0,BI_currents0[:,8],color=:purple)#  IMET
 
 PR_plothandle=lines!(PR_axis,PR_time0,PR_volt0)
 
-PR_c_plothandle=lines!(PR_c_axis,PR_time0,PR_currents0[:,1])#, label="IK1")
-PR_c_plothandle2=lines!(PR_c_axis,PR_time0,PR_currents0[:,2],color=:red)#, label="Ih")
-PR_c_plothandle3=lines!(PR_c_axis,PR_time0,PR_currents0[:,3],color=:blue)#, label="IDRK")
-PR_c_plothandle4=lines!(PR_c_axis,PR_time0,PR_currents0[:,4],color=:orange)#, label="ICa")
-PR_c_plothandle5=lines!(PR_c_axis,PR_time0,PR_currents0[:,5],color=:darkred)#, label="IBKS")
-PR_c_plothandle6=lines!(PR_c_axis,PR_time0,PR_currents0[:,6],color=:green)#, label="IBKT")
-PR_c_plothandle7=lines!(PR_c_axis,PR_time0,PR_currents0[:,7],color=:magenta)#, label="IL")
-PR_c_plothandle8=lines!(PR_c_axis,PR_time0,PR_currents0[:,8],color=:purple)#, label="IMET")
+PR_c_plothandle1=lines!(PR_c_axis,PR_time0,PR_currents0[:,1],color=:black)#   IK1
+PR_c_plothandle2=lines!(PR_c_axis,PR_time0,PR_currents0[:,2],color=:red)#     Ih
+PR_c_plothandle3=lines!(PR_c_axis,PR_time0,PR_currents0[:,3],color=:blue)#    IDRK
+PR_c_plothandle4=lines!(PR_c_axis,PR_time0,PR_currents0[:,4],color=:orange)#  ICa
+PR_c_plothandle5=lines!(PR_c_axis,PR_time0,PR_currents0[:,5],color=:darkred)# IBKS
+PR_c_plothandle6=lines!(PR_c_axis,PR_time0,PR_currents0[:,6],color=:green)#   IBKT
+PR_c_plothandle7=lines!(PR_c_axis,PR_time0,PR_currents0[:,7],color=:magenta)# IL
+PR_c_plothandle8=lines!(PR_c_axis,PR_time0,PR_currents0[:,8],color=:purple)#  IMET
 
+# Node attached to all sliders - make a thing called stuff which stores the
+# return values of go() when any of the sliders are altered
 stuff=lift(go, E_K_slider.value, E_h_slider.value,
       E_Ca_slider.value, E_L_slider.value,
       g_K1_slider.value, g_h_slider.value,
@@ -503,15 +442,18 @@ stuff=lift(go, E_K_slider.value, E_h_slider.value,
       b_slider.value, v0_slider.value,
       p_slider.value)
 
+# When a thing called stuff is made, do all the stuff in the lift block
 @lift begin
     arrays=$stuff
+    # Extract relevant arrays from stuff
     BIV=arrays[1]
     PRV=arrays[3]
     BIc=arrays[5]
     PRc=arrays[6]
+    # Replace the y-value arrays in the plot handles with new ones
     BI_plothandle[2]=BIV
     PR_plothandle[2]=PRV
-    BI_c_plothandle[2]=BIc[:,1]
+    BI_c_plothandle1[2]=BIc[:,1]
     BI_c_plothandle2[2]=BIc[:,2]
     BI_c_plothandle3[2]=BIc[:,3]
     BI_c_plothandle4[2]=BIc[:,4]
@@ -519,7 +461,7 @@ stuff=lift(go, E_K_slider.value, E_h_slider.value,
     BI_c_plothandle6[2]=BIc[:,6]
     BI_c_plothandle7[2]=BIc[:,7]
     BI_c_plothandle8[2]=BIc[:,8]
-    PR_c_plothandle[2]=PRc[:,1]
+    PR_c_plothandle1[2]=PRc[:,1]
     PR_c_plothandle2[2]=PRc[:,2]
     PR_c_plothandle3[2]=PRc[:,3]
     PR_c_plothandle4[2]=PRc[:,4]
@@ -527,7 +469,6 @@ stuff=lift(go, E_K_slider.value, E_h_slider.value,
     PR_c_plothandle6[2]=PRc[:,6]
     PR_c_plothandle7[2]=PRc[:,7]
     PR_c_plothandle8[2]=PRc[:,8]
-
 end
 
 scene
