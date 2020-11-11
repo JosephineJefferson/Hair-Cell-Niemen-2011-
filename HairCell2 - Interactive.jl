@@ -356,7 +356,7 @@ function burnin(cell, time=5.0u"s", displayV=true,displayEachC=false,displayallC
     if printMP
         #println(string("RMP after burn-in: ",cell.x[1]))
     end
-    return ustrip.(voltBI),ustrip.(t)
+    return ustrip.(voltBI),ustrip.(t),ustrip.(currents_p)
 end
 
 """
@@ -426,7 +426,7 @@ function pulseResponse(cell,amplitude=p_slider.value[]*1.0u"nA", time=Pulse_time
     if printMP
         #println(string("RMP after pulse: ",cell.x[1]))
     end
-    return voltages,t,cell
+    return voltages,t,currents_p
 end
 
 function go(
@@ -455,35 +455,46 @@ function go(
     burn_arrays=burnin(helga,bi_time)
     burn_time=burn_arrays[2]
     burn_v=burn_arrays[1]
+    burn_currents=burn_arrays[3]
     #Injected current reponse
     pulse_arrays=pulseResponse(helga,amp*1.0u"nA")
     pulse_V=ustrip.(pulse_arrays[1])
     pulse_time=ustrip.(pulse_arrays[2])
-    return burn_v,burn_time,pulse_V,pulse_time
+    pulse_currents=ustrip.(pulse_arrays[3])
+    return burn_v,burn_time,pulse_V,pulse_time,burn_currents,pulse_currents
 end
-#@async while isopen(scene)
-const x=0:ustrip(dt):ustrip(BI_time)
-const x_pulse=0:ustrip(dt):ustrip(Pulse_time)
-#BI_volt=zeros(length(x))
 
-#@async while isopen(scene)
-# my_things=lift(go, E_K_slider.value, E_h_slider.value,
-#                 E_Ca_slider.value, E_L_slider.value,
-#                 g_K1_slider.value, g_h_slider.value,
-#                 g_Ca_slider.value, g_L_slider.value,
-#                 b_slider.value, v0_slider.value,
-#                 p_slider.value)
-#
-# block=lift(my_things) do my_things
-#     plot!(BI_axis,my_things[2],my_things[1])
-# end
+all_arrays=go()
+BI_volt0=all_arrays[1]
+BI_time0=all_arrays[2]
+PR_volt0=all_arrays[3]
+PR_time0=all_arrays[4]
+BI_currents0=all_arrays[5]
+PR_currents0=all_arrays[6]
 
-#BI_volt=my_things.val[1]
-#BI_t=my_things.val[2]
 
-BI_plothandle=lines!(BI_axis,x[:],go()[1])
+BI_plothandle=lines!(BI_axis,BI_time0,BI_volt0)
 
-PR_plothandle=lines!(PR_axis,x_pulse[:],go()[3])
+BI_c_plothandle=lines!(BI_c_axis,BI_time0,BI_currents0[:,1])#, label="IK1")
+BI_c_plothandle2=lines!(BI_c_axis,BI_time0,BI_currents0[:,2],color=:red)#, label="Ih")
+BI_c_plothandle3=lines!(BI_c_axis,BI_time0,BI_currents0[:,3],color=:blue)#, label="IDRK")
+BI_c_plothandle4=lines!(BI_c_axis,BI_time0,BI_currents0[:,4],color=:orange)#, label="ICa")
+BI_c_plothandle5=lines!(BI_c_axis,BI_time0,BI_currents0[:,5],color=:darkred)#, label="IBKS")
+BI_c_plothandle6=lines!(BI_c_axis,BI_time0,BI_currents0[:,6],color=:green)#, label="IBKT")
+BI_c_plothandle7=lines!(BI_c_axis,BI_time0,BI_currents0[:,7],color=:magenta)#, label="IL")
+BI_c_plothandle8=lines!(BI_c_axis,BI_time0,BI_currents0[:,8],color=:purple)#, label="IMET")
+
+
+PR_plothandle=lines!(PR_axis,PR_time0,PR_volt0)
+
+PR_c_plothandle=lines!(PR_c_axis,PR_time0,PR_currents0[:,1])#, label="IK1")
+PR_c_plothandle2=lines!(PR_c_axis,PR_time0,PR_currents0[:,2],color=:red)#, label="Ih")
+PR_c_plothandle3=lines!(PR_c_axis,PR_time0,PR_currents0[:,3],color=:blue)#, label="IDRK")
+PR_c_plothandle4=lines!(PR_c_axis,PR_time0,PR_currents0[:,4],color=:orange)#, label="ICa")
+PR_c_plothandle5=lines!(PR_c_axis,PR_time0,PR_currents0[:,5],color=:darkred)#, label="IBKS")
+PR_c_plothandle6=lines!(PR_c_axis,PR_time0,PR_currents0[:,6],color=:green)#, label="IBKT")
+PR_c_plothandle7=lines!(PR_c_axis,PR_time0,PR_currents0[:,7],color=:magenta)#, label="IL")
+PR_c_plothandle8=lines!(PR_c_axis,PR_time0,PR_currents0[:,8],color=:purple)#, label="IMET")
 
 stuff=lift(go, E_K_slider.value, E_h_slider.value,
       E_Ca_slider.value, E_L_slider.value,
@@ -495,35 +506,28 @@ stuff=lift(go, E_K_slider.value, E_h_slider.value,
 @lift begin
     arrays=$stuff
     BIV=arrays[1]
-    #ttb=arrays[2]
     PRV=arrays[3]
-    #ttp=arrays[4]
+    BIc=arrays[5]
+    PRc=arrays[6]
     BI_plothandle[2]=BIV
     PR_plothandle[2]=PRV
+    BI_c_plothandle[2]=BIc[:,1]
+    BI_c_plothandle2[2]=BIc[:,2]
+    BI_c_plothandle3[2]=BIc[:,3]
+    BI_c_plothandle4[2]=BIc[:,4]
+    BI_c_plothandle5[2]=BIc[:,5]
+    BI_c_plothandle6[2]=BIc[:,6]
+    BI_c_plothandle7[2]=BIc[:,7]
+    BI_c_plothandle8[2]=BIc[:,8]
+    PR_c_plothandle[2]=PRc[:,1]
+    PR_c_plothandle2[2]=PRc[:,2]
+    PR_c_plothandle3[2]=PRc[:,3]
+    PR_c_plothandle4[2]=PRc[:,4]
+    PR_c_plothandle5[2]=PRc[:,5]
+    PR_c_plothandle6[2]=PRc[:,6]
+    PR_c_plothandle7[2]=PRc[:,7]
+    PR_c_plothandle8[2]=PRc[:,8]
 
 end
 
-# plot!(PR_axis,x_pulse,
-#       lift(go, E_K_slider.value, E_h_slider.value,
-#       E_Ca_slider.value, E_L_slider.value,
-#       g_K1_slider.value, g_h_slider.value,
-#       g_Ca_slider.value, g_L_slider.value,
-#       b_slider.value, v0_slider.value,
-#       p_slider.value).val[3]
-#       )
-
-
-#P=plot!(BI_axis,BI_t,BI_volt)
-
-# global BI_volt=lift(go, E_K_slider.value, E_h_slider.value,
-#             E_Ca_slider.value, E_L_slider.value,
-#             g_K1_slider.value, g_h_slider.value,
-#             g_Ca_slider.value, g_L_slider.value,
-#             b_slider.value, v0_slider.value,
-#             p_slider.value)[1]
-#yield()
-#end
-
-#plot!(BI_axis,x,BI_volt)
-#RecordEvents(scene,"output")
 scene
