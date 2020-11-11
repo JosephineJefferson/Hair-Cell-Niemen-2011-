@@ -17,6 +17,8 @@ const F = 96485.3329u"s*A/mol" #Faraday constant
 const R = 8.314u"J/(mol*K)" #universal gas constant
 const T = 295.15u"K" #Temperature in Kalvin
 const dt= 1.0e-5u"s" #timestep - theirs was 1e-5
+const BI_time=2.0u"s"
+const Pulse_time=0.5u"s"
 
 """
     Structure modelling a bullfrog saccular hair cell
@@ -62,13 +64,17 @@ scene, layout=layoutscene(nrows=1,ncols=3,resolution = (1400,700))
 #set up axes for burn-in plot
 layout[1,1]=BIplots_layout=GridLayout(2,1)
 BIplots_layout[1,1]=BI_axis=LAxis(scene, title="Burn-In", ylabel="memb. pot. (mV)", xlabel="time (sec)")
+#set up axes for burn-in current plot
+BIplots_layout[2,1]=BI_c_axis=LAxis(scene, title="Currents", ylabel="amplitude (nA)", xlabel="time (sec)")
 
 #set up axes for pulse response plot
 layout[1,3]=PRplots_layout=GridLayout(2,1)
 PRplots_layout[1,1]=PR_axis=LAxis(scene, title="Pulse Response", ylabel="memb. pot. (mV)", xlabel="time (sec)")
+#axis for currents during pulse
+PRplots_layout[2,1]=PR_c_axis=LAxis(scene, title="Currents", ylabel="amplitude (nA)", xlabel="time (sec)")
 
 #slider panel
-layout[1,2]=slider_panel=GridLayout(13,1)
+layout[1,2]=slider_panel=GridLayout(12,1)
 #EK slider
 slider_panel[1,1]=EK_layout=GridLayout(1,3)
 EK_layout[1,1]=LText(scene,"E_K", textsize=20)
@@ -142,10 +148,6 @@ p_layout[1,1]=LText(scene,"Pulse", textsize=20)
 p_layout[1,2]=p_slider=LSlider(scene, range=0.005:0.005:0.1,startvalue=0.005)
 p_layout[1,3]=LText(scene, lift(x->@sprintf("%.2f",x), p_slider.value))
 
-#Redraw button
-slider_panel[13,1]=button_grid=GridLayout(1,2)
-button_grid[1,1]=go_button=LButton(scene,label="Redraw")
-
 
 ################################################################################
 #Done constructing GUI
@@ -154,26 +156,37 @@ button_grid[1,1]=go_button=LButton(scene,label="Redraw")
 """
     Contructor. Note: gK1 and b are the main control parameters of the model.
 """
-function Hair_Cell(V::typeof(1.0u"mV"))#,g_K1=100.0u"nS",b=0.7) # g and b from (a)
+function Hair_Cell(V::typeof(1.0u"mV"),
+                    #Reversal potentials
+                    E_K,
+                    E_h,
+                    E_Ca,
+                    E_L,
+                    #Maximal Conductances
+                    g_K1,
+                    g_h,
+                    g_Ca,
+                    g_L,
+                    b)
     #Reversal Potentials
-    E_K=E_K_slider.value[]*1.0u"mV" #-90.0u"mV" # (a,c)
-    E_h=E_h_slider.value[]*1.0u"mV" #-40.0u"mV" #for cation h-current (e)
-    E_Ca=E_Ca_slider.value[]*1.0u"mV" #42.5u"mV" # (a,f)
-    E_L=E_L_slider.value[]*1.0u"mV" #-40.0u"mV" # (f)
-    E_MET=0.0u"mV" # (a)
+    E_K=E_K*1.0u"mV"
+    E_h=E_h*1.0u"mV"
+    E_Ca=E_Ca*1.0u"mV"
+    E_L=E_L*1.0u"mV"
+    E_MET=0.0u"mV"
     #Maximal Conductances
-    g_K1=g_K1_slider.value[]*1.0u"nS" #g_K1#g_K1 is one of the main control parameters of the model
-    g_h=g_h_slider.value[]*1.0u"nS" #2.0u"nS" #for cation h-current (e)
-    g_Ca=g_Ca_slider.value[]*1.0u"nS" #1.3u"nS" # (d,e)
-    g_L=g_L_slider.value[]*1.0u"nS" #0.77u"nS" # (b)
-    g_MET=0.65u"nS" # (a)
+    g_K1=g_K1*1.0u"nS"
+    g_h=g_h*1.0u"nS"
+    g_Ca=g_Ca*1.0u"nS"
+    g_L=g_L*1.0u"nS"
+    g_MET=0.65u"nS"
     #Max permeabilities of currents
     P_DRK=2.4e-14u"L/s" # (a)
     P_BKS=2e-13u"L/s" #calcium current (a,c)
     P_BKT=14e-13u"L/s" #calcium current (a,c)
     #b is another key control parameter (dimensionless)
     #b controls the strength of the above currents (BKS and BKT)
-    b=b_slider.value[]
+    b=b
     #cell capacitance
     Cm=10.0u"pF" # (a,c)
     #initial m values for state vector, set as 0 for now
@@ -389,7 +402,7 @@ end
 """
     Models response of cell to a pulse of given amplitude and length
 """
-function pulseResponse(cell, time=0.5u"s", start=2.0e-1u"s", len=2.0e-1u"s", amplitude=p_slider.value[]*1.0u"nA", displayV=true,displayEachC=false,displayallC=true,printMP=false)
+function pulseResponse(cell,amplitude=p_slider.value[]*1.0u"nA", time=Pulse_time, start=2.0e-1u"s", len=2.0e-1u"s", displayV=true,displayEachC=false,displayallC=true,printMP=false)
     t=0.0u"s":dt:time
     input = pulse(time,start,len,amplitude) #in nA
     voltages=Array{typeof(1.0u"mV")}(undef, length(t))
@@ -416,36 +429,101 @@ function pulseResponse(cell, time=0.5u"s", start=2.0e-1u"s", len=2.0e-1u"s", amp
     return voltages,t,cell
 end
 
-helga = Hair_Cell(v0_slider.value[]*1.0u"mV")
-
-burn_arrays=burnin(helga,2u"s")
-burn_time=burn_arrays[2]
-burn_v=burn_arrays[1]
-lines!(BI_axis,burn_time,burn_v, color=:grey)
-
-pulse_arrays=pulseResponse(helga)
-pulse_time=ustrip.(pulse_arrays[2])
-pulse_v=ustrip.(pulse_arrays[1])
-lines!(PR_axis,pulse_time,pulse_v, color=:grey)
-#lines!(PR_axis,1:10,1:10)
-
-
-on(go_button.clicks) do clicks
-    println("should change")
-    #lines!(BI_axis,burn_time1,burn_v1,color=:grey)
-    romy = Hair_Cell(v0_slider.value[]*1.0u"mV")
-    burn_arrays=burnin(romy,2u"s")
+function go(
+            E_K=E_K_slider.value[],
+            E_h=E_h_slider.value[],
+            E_Ca=E_Ca_slider.value[],
+            E_L=E_L_slider.value[],
+            #Maximal Conductances
+            g_K1=g_K1_slider.value[],
+            g_h=g_h_slider.value[],
+            g_Ca=g_Ca_slider.value[],
+            g_L=g_L_slider.value[],
+            #Other sliders
+            b=b_slider.value[],
+            v0=v0_slider.value[],
+            amp=p_slider.value[],
+            #Other params
+            bi_time=BI_time
+            )
+    #initiate hair cell
+    helga=Hair_Cell(v0*1.0u"mV",E_K, E_h,
+                    E_Ca, E_L, g_K1, g_h,
+                    g_Ca, g_L, b
+                    )
+    #burn in
+    burn_arrays=burnin(helga,bi_time)
     burn_time=burn_arrays[2]
     burn_v=burn_arrays[1]
-    #BIplots_layout[1,1]=BI_axis2=LAxis(scene, title="Burn-In", ylabel="memb. pot. (mV)", xlabel="time (sec)")
-    lines!(BI_axis,burn_time,burn_v,color=:red)
-    pulse_arrays=pulseResponse(romy)
+    #Injected current reponse
+    pulse_arrays=pulseResponse(helga,amp*1.0u"nA")
+    pulse_V=ustrip.(pulse_arrays[1])
     pulse_time=ustrip.(pulse_arrays[2])
-    pulse_v=ustrip.(pulse_arrays[1])
-    lines!(PR_axis,pulse_time,pulse_v, color=:red)
-    update!(scene)
+    return burn_v,burn_time,pulse_V,pulse_time
+end
+#@async while isopen(scene)
+const x=0:ustrip(dt):ustrip(BI_time)
+const x_pulse=0:ustrip(dt):ustrip(Pulse_time)
+#BI_volt=zeros(length(x))
+
+#@async while isopen(scene)
+# my_things=lift(go, E_K_slider.value, E_h_slider.value,
+#                 E_Ca_slider.value, E_L_slider.value,
+#                 g_K1_slider.value, g_h_slider.value,
+#                 g_Ca_slider.value, g_L_slider.value,
+#                 b_slider.value, v0_slider.value,
+#                 p_slider.value)
+#
+# block=lift(my_things) do my_things
+#     plot!(BI_axis,my_things[2],my_things[1])
+# end
+
+#BI_volt=my_things.val[1]
+#BI_t=my_things.val[2]
+
+BI_plothandle=lines!(BI_axis,x[:],go()[1])
+
+PR_plothandle=lines!(PR_axis,x_pulse[:],go()[3])
+
+stuff=lift(go, E_K_slider.value, E_h_slider.value,
+      E_Ca_slider.value, E_L_slider.value,
+      g_K1_slider.value, g_h_slider.value,
+      g_Ca_slider.value, g_L_slider.value,
+      b_slider.value, v0_slider.value,
+      p_slider.value)
+
+@lift begin
+    arrays=$stuff
+    BIV=arrays[1]
+    #ttb=arrays[2]
+    PRV=arrays[3]
+    #ttp=arrays[4]
+    BI_plothandle[2]=BIV
+    PR_plothandle[2]=PRV
+
 end
 
+# plot!(PR_axis,x_pulse,
+#       lift(go, E_K_slider.value, E_h_slider.value,
+#       E_Ca_slider.value, E_L_slider.value,
+#       g_K1_slider.value, g_h_slider.value,
+#       g_Ca_slider.value, g_L_slider.value,
+#       b_slider.value, v0_slider.value,
+#       p_slider.value).val[3]
+#       )
 
 
-display(scene)
+#P=plot!(BI_axis,BI_t,BI_volt)
+
+# global BI_volt=lift(go, E_K_slider.value, E_h_slider.value,
+#             E_Ca_slider.value, E_L_slider.value,
+#             g_K1_slider.value, g_h_slider.value,
+#             g_Ca_slider.value, g_L_slider.value,
+#             b_slider.value, v0_slider.value,
+#             p_slider.value)[1]
+#yield()
+#end
+
+#plot!(BI_axis,x,BI_volt)
+#RecordEvents(scene,"output")
+scene
