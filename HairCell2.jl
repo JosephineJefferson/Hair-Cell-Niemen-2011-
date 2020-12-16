@@ -5,6 +5,7 @@ Hodgkin-Huxely type
 """
 
 using Unitful
+using Distributions
 using Plots
 gr()
 
@@ -13,7 +14,13 @@ const k_ext = 2.0u"mmol/L" #Extracellular potassium conc. (millimolar)
 const F = 96485.3329u"s*A/mol" #Faraday constant
 const R = 8.314u"J/(mol*K)" #universal gas constant
 const T = 295.15u"K" #Temperature in Kalvin
+const kβ = 1.38e-23u"J/K" #Boltzmann constant
+const zgate  = 40u"fN"# gatingforce 40 fN (Howard, Roberts & Hudspeth 1988)
+const pr = 0.15   # resting/spontaneous open state probability
+const max_deflect= 1000.0u"nm" #maximum kinocilium deflection
+const min_deflect= -500.0u"nm" #minimum kinocilium deflection
 const dt= 1.0e-5u"s" #timestep - theirs was 1e-5
+const n_met_chan=100
 
 """
     Structure modelling a bullfrog saccular hair cell
@@ -21,8 +28,8 @@ const dt= 1.0e-5u"s" #timestep - theirs was 1e-5
 struct Hair_Cell
     #state vector(s)
     x::Array{Any,1} #contains V, m_K1f, m_K1s, m_h, m_DRK, m_Ca
-    BK::Array{Any,1} #contains Ca_conc, h_BKT
-    PoMET::Array{Any,1} #contains open state prob.
+    BK::Array{Any,1} #contains Ca_conc, current state probabilities, h_BKT
+    PoMET::Array{Any,1} #contains open state prob and deflec due to brownian motion
     currents::Array{typeof(1.0u"nA"),1} #stores current current values
     #Parameters
     #
@@ -40,8 +47,9 @@ struct Hair_Cell
     g_MET::typeof(1.0u"nS")
     #Max permeabilities of currents
     P_DRK::typeof(1.0u"L/s")#"L/s")
-    P_BKS::typeof(1.0u"L/s") #calcium current
-    P_BKT::typeof(1.0u"L/s") #calcium current
+    P_BKS::typeof(1.0u"L/s") #calcium  dep current
+    P_BKT::typeof(1.0u"L/s") #calcium dep current
+    P_A::typeof(1.0u"L/s") #IA
     #b is another key control parameter (dimensionless)
     #b controls the strength of the above currents (BKS and BKT)
     b::Float64
@@ -52,53 +60,60 @@ end
 """
     Contructor. Note: gK1 and b are the main control parameters of the model.
 """
-function Hair_Cell(V::typeof(1.0u"mV"),g_K1=20.0u"nS",b=0.5) # g and b from (a)
+function Hair_Cell(V::typeof(1.0u"mV"),g_K1=7.0u"nS",b=1.0) # g and b from (a)
     #Reversal Potentials
     E_K=-95.0u"mV" # (a,c)
     E_h=-45.0u"mV" #for cation h-current (e)
     E_Ca=42.5u"mV" # (a,f)
-    E_L=-40.0u"mV" # (f)
+    E_L=0.0u"mV" # (f)
     E_MET=0.0u"mV" # (a)
     #Maximal Conductances
     g_K1=g_K1#g_K1 is one of the main control parameters of the model
     g_h=2.2u"nS" #for cation h-current (e)
     g_Ca=1.2u"nS" # (d,e)
-    g_L=0.77u"nS" # (b)
+    g_L=0.1u"nS" # (b)
     g_MET=0.65u"nS" # (a)
     #Max permeabilities of currents
     P_DRK=2.4e-14u"L/s" # (a)
     P_BKS=2e-13u"L/s" #calcium current (a,c)
     P_BKT=14e-13u"L/s" #calcium current (a,c)
+    P_A=1.08e-13u"L/s"
     #b is another key control parameter (dimensionless)
     #b controls the strength of the above currents (BKS and BKT)
     b=b
     #cell capacitance
-    Cm=20.0u"pF" # (a,c)
+    Cm=10.0u"pF" # (a,c)
     #initial m values for state vector, set as 0 for now
     m_K1f=m_k1_inf(V)
     m_K1s=m_k1_inf(V)
     m_h=m_h_inf(V)
     m_DRK=m_DRK_inf(V)
     m_Ca=m_Ca_inf(V)
+    m_A = m_A_inf(V)
+    hA1 = h_A_inf(V)
+    hA2 = h_A_inf(V)
     #initial values for params of BK-current stuff (another state vector)
-    Ca_conc= 0.0u"mmol/L"#find something good
+    Ca_conc= 0.0u"μmol/L"#find something good
     h_BKT=h_BKT_inf(V) #h for inactivation
-    C0=0.6
-    C1=0.1
-    C2=0.1
-    O2=0.1
-    O3=0.1
+    C0=0.9
+    C1=0.025
+    C2=0.025
+    O2=0.025
+    O3=0.025
 
     PoMet=0.15
-    return Hair_Cell([V,m_K1f, m_K1s, m_h, m_DRK, m_Ca], [Ca_conc, h_BKT,C0,C1,C2,O2,O3],[PoMet],[0.0u"nA",0.0u"nA",0.0u"nA",0.0u"nA",0.0u"nA",0.0u"nA",0.0u"nA",0.0u"nA"],
-    E_K,E_h,E_Ca,E_L,E_MET,g_K1,g_h,g_Ca,g_L,g_MET,P_DRK,P_BKS,P_BKT,b,Cm)
+    #deflec=0.0u"nm"
+    brown_def=0.0u"nm"
+    return Hair_Cell([V,m_K1f, m_K1s, m_h, m_DRK, m_Ca, m_A, hA1, hA2], [Ca_conc, h_BKT,C0,C1,C2,O2,O3],[PoMet,brown_def],[0.0u"nA",0.0u"nA",0.0u"nA",0.0u"nA",0.0u"nA",0.0u"nA",0.0u"nA",0.0u"nA",0.0u"nA"],
+    E_K,E_h,E_Ca,E_L,E_MET,g_K1,g_h,g_Ca,g_L,g_MET,P_DRK,P_BKS,P_BKT,P_A,b,Cm)
 end
 
-function update(cell::Hair_Cell,input=0.0u"nA")
+function update(cell::Hair_Cell,input=0.0u"nA",deflection=0.0u"nm",stoch=true)
     V=cell.x[1]
     thing=(V*F)/(R*T)
     pow=uconvert(Unitful.NoUnits,thing)
     IK1 = cell.g_K1*(V-cell.E_K)*(0.7*mk1f(V,cell.x[2])+0.3*mk1s(V,cell.x[3]))
+    #IK1=0.0u"nA"
     cell.currents[1]=IK1
     Ih = cell.g_h*(V-cell.E_h)*(3*mh(V,cell.x[4])^2*(1-mh(V,cell.x[4]))+mh(V,cell.x[4])^3)
     cell.currents[2]=Ih
@@ -106,15 +121,24 @@ function update(cell::Hair_Cell,input=0.0u"nA")
     cell.currents[3]=IDRK
     ICa = cell.g_Ca*(V-cell.E_Ca)*mCa(V,cell.x[6])^3
     cell.currents[4]=ICa
-    IBKS = cell.b*cell.P_BKS*((V*F^2)/(R*T))*((k_int-k_ext*exp(-pow))/(1-exp(-pow)))*(O_2(V,cell.BK[5],cell.BK[6],cell.BK[7])+O_3(V,cell.BK[6],cell.BK[7]))
+    IBKS = cell.b*cell.P_BKS*((V*F^2)/(R*T))*((k_int-k_ext*exp(-pow))/(1-exp(-pow)))*(O_2(V,cell.BK[5],cell.BK[6],cell.BK[7],cell.BK[1])+O_3(V,cell.BK[6],cell.BK[7],cell.BK[1]))
     cell.currents[5]=IBKS
-    IBKT = cell.b*cell.P_BKT*((V*F^2)/(R*T))*((k_int-k_ext*exp(-pow))/(1-exp(-pow)))*(O_2(V,cell.BK[5],cell.BK[6],cell.BK[7])+O_3(V,cell.BK[6],cell.BK[7]))*hBKT(V,cell.BK[2])
+    IBKT = cell.b*cell.P_BKT*((V*F^2)/(R*T))*((k_int-k_ext*exp(-pow))/(1-exp(-pow)))*(O_2(V,cell.BK[5],cell.BK[6],cell.BK[7],cell.BK[1])+O_3(V,cell.BK[6],cell.BK[7],cell.BK[1]))*hBKT(V,cell.BK[2])
     cell.currents[6]=IBKT
     IL = cell.g_L*(V-cell.E_L)
     cell.currents[7]=IL
+    deflec=deflection+cell.PoMET[2] # deflection = imposed defection + accumulated brownian deflec
+    if stoch
+        cell.PoMET[2]=ΔX(cell.PoMET[2]) #add next step of brownian to cumulative
+        deflec+=cell.PoMET[2] #add new cumulative to deflec
+    end
+    cell.PoMET[1]=p_open(deflec) # calc open-state prob based on semi-brownian deflec
     IMET = cell.g_MET*cell.PoMET[1]*(V-cell.E_MET)
     cell.currents[8]=IMET
-    ΔV=uconvert(u"mV",(-IK1-Ih-IDRK-ICa-IBKS-IBKT-IL-IMET+input)*dt/cell.Cm)
+    aIA=a1(V)
+    IA=cell.P_A*((V*F^2)/(R*T))*((k_int-k_ext*exp(-pow))/(1-exp(-pow)))*((mA(V,cell.x[7]))^3)*(aIA*hA1(V,cell.x[8])+(1-aIA)hA2(V,cell.x[9]))
+    cell.currents[9]=IA
+    ΔV=uconvert(u"mV",(-IK1-Ih-IDRK-ICa-IBKS-IBKT-IL-IMET-IA+input)*dt/cell.Cm)
 
     #update things
     cell.x[1]= V + ΔV #voltage/membrane potential
@@ -123,13 +147,16 @@ function update(cell::Hair_Cell,input=0.0u"nA")
     cell.x[4]=   mh(V,cell.x[4]) #m_h
     cell.x[5]= mDRK(V,cell.x[5]) #m_DRK
     cell.x[6]=  mCa(V,cell.x[6]) #m_Ca
-    #cell.BK[1]= Ca_conc(cell.BK[1],ICa) #Intracellular calcium concentration
+    cell.x[7]=   mA(V,cell.x[7]) #mA
+    cell.x[8]=  hA1(V,cell.x[8]) #hA1
+    cell.x[9]=  hA2(V,cell.x[9]) #hA2
+    cell.BK[1]= Ca_conc(cell.BK[1],ICa) #Intracellular calcium concentration
     cell.BK[2]= hBKT(V,cell.BK[2]) #h_BKT
     cell.BK[3]= C_0(cell.BK[4],cell.BK[5],cell.BK[6],cell.BK[7]) #C0
-    cell.BK[4]= C_1(V,cell.BK[3],cell.BK[4],cell.BK[5]) #C1
-    cell.BK[5]= C_2(V,cell.BK[4],cell.BK[5],cell.BK[6]) #C2
-    cell.BK[6]= O_2(V,cell.BK[5],cell.BK[6],cell.BK[7]) #02
-    cell.BK[7]= O_3(V,cell.BK[6],cell.BK[7]) #03
+    cell.BK[4]= C_1(V,cell.BK[3],cell.BK[4],cell.BK[5],cell.BK[1]) #C1
+    cell.BK[5]= C_2(V,cell.BK[4],cell.BK[5],cell.BK[6],cell.BK[1]) #C2
+    cell.BK[6]= O_2(V,cell.BK[5],cell.BK[6],cell.BK[7],cell.BK[1]) #02
+    cell.BK[7]= O_3(V,cell.BK[6],cell.BK[7],cell.BK[1]) #03
 end
 
 #equations for K1 current
@@ -174,9 +201,9 @@ const β_c=2500.0u"1/s"#1000.0u"1/s" #s^-1 #changed to OG value ****************
 
 #for auxiliary equations
 const α_c_0=450.0u"1/s" #s^-1
-const K1_0=6.0#u"μmol/L" #micromolar
-const K2_0=45.0#u"μmol/L" #micromolar
-const K3_0=20.0#u"μmol/L" #micromolar
+const K1_0=6.0u"μmol/L" #micromolar
+const K2_0=45.0u"μmol/L" #micromolar
+const K3_0=20.0u"μmol/L" #micromolar
 const z = 2 #sign of charge of Ca2+
 const δ1 = 0.2 #fraction of the electric field experienced by Ca2 at the 1st binding site
 const δ2 = 0.0 #fraction of the electric field experienced by Ca2 at the 2nd binding site
@@ -189,30 +216,78 @@ K1(V)=K1_0*exp(δ1*z*uconvert(Unitful.NoUnits,(V*F)/(R*T)))
 K2(V)=K2_0*exp(δ2*z*uconvert(Unitful.NoUnits,(V*F)/(R*T)))
 K3(V)=K3_0*exp(δ3*z*uconvert(Unitful.NoUnits,(V*F)/(R*T)))
 
-k1_Ca(V)=k_1/(K1(V))
-k2_Ca(V)=k_2/(K2(V))
-k3_Ca(V)=k_3/(K3(V))
+k1(V)=k_1/(K1(V))
+k2(V)=k_2/(K2(V))
+k3(V)=k_3/(K3(V))
 
 C_0(C1,C2,O2,O3) = 1.0 - (C1 + C2 + O2 + O3)
-C_1(V,C0,C1,C2)= C1 + ΔC_1(V,C0,C1,C2)
-ΔC_1(V,C0,C1,C2)=uconvert(Unitful.NoUnits,(k1_Ca(V)*C0+k_2*C2-(k_1+k2_Ca(V))*C1)*dt)
-C_2(V,C1,C2,O2)= C2 + ΔC_2(V,C1,C2,O2)
-ΔC_2(V,C1,C2,O2)=uconvert(Unitful.NoUnits,(k2_Ca(V)*C1+α_c(V)*O2-(k_2+β_c)*C2)*dt)
-O_2(V,C2,O2,O3)= O2 + ΔO_2(V,C2,O2,O3)
-ΔO_2(V,C2,O2,O3)=uconvert(Unitful.NoUnits,(β_c*C2+k_3*O3-(α_c(V)+k3_Ca(V))*O2)*dt)
-O_3(V,O2,O3)= O3+ΔO_3(V,O2,O3)
-ΔO_3(V,O2,O3)=uconvert(Unitful.NoUnits,(k3_Ca(V)*O2-k_3*O3)*dt)
+C_1(V,C0,C1,C2,Ca)= C1 + ΔC_1(V,C0,C1,C2,Ca)
+ΔC_1(V,C0,C1,C2,Ca)=uconvert(Unitful.NoUnits,(k1(V)*Ca*C0+k_2*C2-(k_1+k2(V)*Ca)*C1)*dt)
+C_2(V,C1,C2,O2,Ca)= C2 + ΔC_2(V,C1,C2,O2,Ca)
+ΔC_2(V,C1,C2,O2,Ca)=uconvert(Unitful.NoUnits,(k2(V)*Ca*C1+α_c(V)*O2-(k_2+β_c)*C2)*dt)
+O_2(V,C2,O2,O3,Ca)= O2 + ΔO_2(V,C2,O2,O3,Ca)
+ΔO_2(V,C2,O2,O3,Ca)=uconvert(Unitful.NoUnits,(β_c*C2+k_3*O3-(α_c(V)+k3(V)*Ca)*O2)*dt)
+O_3(V,O2,O3,Ca)= O3+ΔO_3(V,O2,O3,Ca)
+ΔO_3(V,O2,O3,Ca)=uconvert(Unitful.NoUnits,(k3(V)*Ca*O2-k_3*O3)*dt)
 
-#Ca_conc(Ca,ICa)=Ca+ΔCa_conc(Ca,ICa)
-#ΔCa_conc(Ca,ICa)=(-0.00061u"mol/(L*ms*nA)"*ICa - 2800u"1/ms"*Ca)*dt #this smells funky
-#Ca_conc(Ca,ICa)=uconvert(u"mmol/L",Ca+ΔCa_conc(Ca,ICa))
-#ΔCa_conc(Ca,ICa)=(-0.00061*ICa - 2800*Ca)*dt
+Ca_conc(Ca,ICa)=Ca+ΔCa_conc(Ca,ICa)
+const U=0.02 #free calcium proportion
+const Cvol = 1256.637u"μm^3"#1.25u"pL"#cell volume
+const ξ = 3.4e-5#proportion of cell hoarding calcium
+const Ksca = 2800u"1/s" #rate constant
+
+ΔCa_conc(Ca,ICa)=uconvert(u"μmol/L",(-(U*ICa)/(z*F*Cvol*ξ)-Ksca*Ca)*dt)
 
 #inactivation of BKT current
 hBKT(V,hBKT) = hBKT+Δh_BKT(V,hBKT)
 Δh_BKT(V,hBKT)= (h_BKT_inf(V)-hBKT)*(dt/τ_BKT(V))
 h_BKT_inf(V) = (1+exp((V+61.6u"mV")/3.65u"mV"))^(-1)
-τ_BKT(V) = 2.1u"ms"+9.4u"ms"*exp(-((V+66.9u"mV")/17.7u"mV")^2)
+τ_BKT(V) = 2.1u"ms"+9.4u"ms"*exp(-(((V+66.9u"mV")/17.7u"mV")^2))
+
+#Equations for IA current
+mA(V,mA)=mA+Δm_A(V,mA)
+Δm_A(V,mA)=(m_A_inf(V)-mA)*dt/τ_A(V)
+m_A_inf(V)=(1+exp(-(V+61u"mV")/10.7u"mV"))^(-1)
+function τ_A(V)
+    if ustrip(V)<-55
+        a=173u"ms"
+        b=17.9u"mV"
+        c=5.4u"ms"
+    else
+        a=0.48u"ms"
+        b=-23.1u"mV"
+        c=1.14u"ms"
+    end
+    return a*exp(V/b)+c
+end
+
+#Inactivation of A-current
+hA1(V,hA1) = hA1+Δh_A1(V,hA1)
+Δh_A1(V,hA1)= (h_A_inf(V)-hA1)*(dt/τ_hA1(V))
+
+hA2(V,hA2) = hA2+Δh_A2(V,hA2)
+Δh_A2(V,hA2)= (h_A_inf(V)-hA2)*(dt/300u"ms")
+
+h_A_inf(V) = (1+exp((V+83u"mV")/3.9u"mV"))^(-1)
+τ_hA1(V) = 74u"ms"+321u"ms"*exp(-((V+82u"mV")/15.5u"mV")^2)
+
+a1(V)=(1-0.54)/(1+exp((V+21.5u"mV")/15.6u"mV")) + 0.54
+
+#Equation for open state probability based on deflection
+
+# solve p₀(x₀)= 1/2 (deflection when open state prob = 1/2)
+const x₀ =  kβ*T*log( (1-pr)/pr)/zgate
+#open state probability based on deflection
+p_open(x) = 1.0/(1.0 + exp(-zgate*(x-x₀)/(kβ*T)))
+
+#Brownian Motion of deflection (x is brownian of prev)
+#getting params
+Q=4000u"s^(-2)"#u"m^2 /s^(-1)" #thermal noise power very unsure about units
+a=exp(-dt/2u"ms") #effect of previous timestep on next
+σ=sqrt(Q*(dt/(1-a^2))) #effect of random noise on next timestep
+noise=Normal(0,1)
+#actual equation
+ΔX(x)=(a*x + σ*sqrt(dt)*rand(noise)*1.0u"nm")*n_met_chan
 
 """
     runs for a given time to let parameters settle into equilibrium state
@@ -220,12 +295,15 @@ h_BKT_inf(V) = (1+exp((V+61.6u"mV")/3.65u"mV"))^(-1)
 function burnin(cell, time=5.0u"s", displayV=true,displayEachC=false,displayallC=true,printMP=true)
     t=0.0u"s":dt:time
     voltBI=Array{typeof(1.0u"mV")}(undef, length(t))
-    currents_p=Array{Any,2}(undef,length(t),8)
+    Ca_p=Array{typeof(1.0u"μmol/L")}(undef, length(t))
+    currents_p=Array{Any,2}(undef,length(t),9)
     for i in 1:length(t)
         update(cell)
         voltBI[i]=cell.x[1]
         currents_p[i,:].=cell.currents
+        Ca_p[i]=cell.BK[1]
     end
+    display(plot(ustrip.(t),ustrip.(Ca_p), title="Calcium"))
     if displayV
         display(plot(ustrip.(t),ustrip.(voltBI), title="Membrane Potential during Burn-in"))
     end
@@ -253,20 +331,22 @@ function plotEach(t,currents)
     display(plot(t,currents[:,6], title="IBKT"))
     display(plot(t,currents[:,7], title="IL"))
     display(plot(t,currents[:,8], title="IMET"))
+    display(plot(t,currents[:,9], title="IA"))
 end
 
 """
     Called by burnin to plot a graph of all currents over time
 """
 function plotTOGETHER(t,currents)
-    plot(t,currents[:,1], label="IK1")
-    plot!(t,currents[:,2], label="Ih")
-    plot!(t,currents[:,3], label="IDRK")
-    plot!(t,currents[:,4], label="ICa")
-    plot!(t,currents[:,5], label="IBKS")
-    plot!(t,currents[:,6], label="IBKT")
-    plot!(t,currents[:,7], label="IL")
-    display(plot!(t,currents[:,8], label="IMET"))
+    plot(t,currents[:,1], label="IK1",color=:red)
+    plot!(t,currents[:,2], label="Ih", color=:blue)
+    plot!(t,currents[:,3], label="IDRK",color=:blue, linestyle=:dash)
+    plot!(t,currents[:,4], label="ICa",color=:gold)
+    plot!(t,currents[:,5], label="IBKS",color=:green)
+    plot!(t,currents[:,6], label="IBKT",color=:green, linestyle=:dash)
+    plot!(t,currents[:,7], label="IL",color=:gold, linestyle=:dash)
+    plot!(t,currents[:,8], label="IMET",color=:black)
+    display(plot!(t,currents[:,9], label="IA",color=:red, linestyle=:dash))
 end
 
 """
@@ -288,13 +368,16 @@ function pulseResponse(cell, amplitude=0.005u"nA", time=0.5u"s", start=2.0e-1u"s
     t=0.0u"s":dt:time
     input = pulse(time,start,len,amplitude) #in nA
     voltages=Array{typeof(1.0u"mV")}(undef, length(t))
-    currents_p=Array{Any,2}(undef,length(t),8)
+    currents_p=Array{Any,2}(undef,length(t),9)
+    Ca_p=Array{typeof(1.0u"μmol/L")}(undef, length(t))
 
     for i in 1:length(input)
         update(cell,input[i])
         voltages[i]=helga.x[1]
         currents_p[i,:].=cell.currents
+        Ca_p[i]=cell.BK[1]
     end
+    display(plot(ustrip.(t),ustrip.(Ca_p), title="Calcium"))
     if displayV
         plot(ustrip.(t),ustrip.(voltages), title="Membrane Potential during Pulse",ylabel="Membrane Potential (mV)")
         display(plot!(twinx(),ustrip.(t),ustrip.(input),ylims=(-1e-3,ustrip(amplitude)*3),ylabel="Pulse Amplitude (nA)",linecolor=:violet,label="pulse"))
